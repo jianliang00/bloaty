@@ -25,12 +25,15 @@ jobs:
         include:
           - os: ubuntu-22.04
             asset: linux-x86_64
+            prefer_system_zlib: "NO"
             cmake_args: ""
           - os: macos-15-intel
             asset: macos-x86_64
+            prefer_system_zlib: "YES"
             cmake_args: "-DCMAKE_OSX_DEPLOYMENT_TARGET=11.0"
           - os: macos-15
             asset: macos-arm64
+            prefer_system_zlib: "YES"
             cmake_args: "-DCMAKE_OSX_DEPLOYMENT_TARGET=11.0"
 
     steps:
@@ -51,12 +54,12 @@ jobs:
           -DBLOATY_PREFER_SYSTEM_CAPSTONE=NO
           -DBLOATY_PREFER_SYSTEM_PROTOBUF=NO
           -DBLOATY_PREFER_SYSTEM_RE2=NO
-          -DBLOATY_PREFER_SYSTEM_ZLIB=NO
+          -DBLOATY_PREFER_SYSTEM_ZLIB=${{ matrix.prefer_system_zlib }}
           -DBLOATY_PREFER_SYSTEM_ZSTD=NO
           ${{ matrix.cmake_args }}
 
       - name: Build
-        run: cmake --build build --config Release --target bloaty --parallel
+        run: cmake --build build --config Release --target bloaty --parallel 2
 
       - name: Smoke test
         shell: bash
