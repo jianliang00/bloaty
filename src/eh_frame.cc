@@ -204,13 +204,6 @@ void ReadEhFrame(string_view data, RangeSink* sink, bool is_64bit) {
             // ref: https://github.com/llvm-mirror/libunwind/commit/0930d6cee2caf71685a84b648f85a2f80bc182c4
             break;
           }
-          case 'G':
-          case 'B': {
-            // Some compilers emit a G/B augmentation character.  We don't
-            // currently handle it, but it's not a fatal error.
-            // ref: https://github.com/llvm-mirror/libunwind/commit/0930d6cee2caf71685a84b648f85a2f80bc182c4
-            break;
-          }
           default:
             std::string aug_char(1, aug_string[0]);
             THROWF("Unexepcted augmentation character: $0", aug_char);

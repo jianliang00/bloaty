@@ -1,0 +1,121 @@
+name: release
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Existing tag to publish"
+        required: true
+        type: string
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    name: build ${{ matrix.asset }}
+    runs-on: ${{ matrix.os }}
+
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-22.04
+            asset: linux-x86_64
+            cmake_args: ""
+          - os: macos-15-intel
+            asset: macos-x86_64
+            cmake_args: "-DCMAKE_OSX_DEPLOYMENT_TARGET=11.0"
+          - os: macos-15
+            asset: macos-arm64
+            cmake_args: "-DCMAKE_OSX_DEPLOYMENT_TARGET=11.0"
+
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          ref: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref }}
+          submodules: recursive
+
+      - name: Configure
+        run: >
+          cmake -S . -B build
+          -DCMAKE_BUILD_TYPE=Release
+          -DBUILD_TESTING=OFF
+          -DBLOATY_PREFER_SYSTEM_ABSL=NO
+          -DBLOATY_PREFER_SYSTEM_CAPSTONE=NO
+          -DBLOATY_PREFER_SYSTEM_PROTOBUF=NO
+          -DBLOATY_PREFER_SYSTEM_RE2=NO
+          -DBLOATY_PREFER_SYSTEM_ZLIB=NO
+          -DBLOATY_PREFER_SYSTEM_ZSTD=NO
+          ${{ matrix.cmake_args }}
+
+      - name: Build
+        run: cmake --build build --config Release --target bloaty --parallel
+
+      - name: Smoke test
+        shell: bash
+        run: |
+          set -euo pipefail
+          ./build/bloaty --version
+          ./build/bloaty ./build/bloaty -d sections > bloaty-smoke.txt
+          test -s bloaty-smoke.txt
+
+      - name: Package
+        shell: bash
+        env:
+          RELEASE_TAG: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref_name }}
+          ASSET: ${{ matrix.asset }}
+        run: |
+          set -euo pipefail
+          package="bloaty-${RELEASE_TAG}-${ASSET}"
+          install -d "dist/${package}/bin"
+          cp build/bloaty "dist/${package}/bin/"
+          cp README.md CHANGES.md LICENSE "dist/${package}/"
+          (cd dist && tar -czf "${package}.tar.gz" "${package}")
+          if command -v sha256sum >/dev/null 2>&1; then
+            (cd dist && sha256sum "${package}.tar.gz" > "${package}.tar.gz.sha256")
+          else
+            (cd dist && shasum -a 256 "${package}.tar.gz" > "${package}.tar.gz.sha256")
+          fi
+
+      - name: Upload build artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: bloaty-${{ matrix.asset }}
+          path: |
+            dist/*.tar.gz
+            dist/*.tar.gz.sha256
+          if-no-files-found: error
+
+  publish:
+    name: publish release
+    runs-on: ubuntu-22.04
+    needs: build
+
+    steps:
+      - name: Download build artifacts
+        uses: actions/download-artifact@v4
+        with:
+          pattern: bloaty-*
+          path: release-assets
+          merge-multiple: true
+
+      - name: Publish release assets
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          RELEASE_TAG: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref_name }}
+        run: |
+          set -euo pipefail
+          if gh release view "${RELEASE_TAG}" >/dev/null 2>&1; then
+            gh release upload "${RELEASE_TAG}" release-assets/* --clobber
+          else
+            gh release create "${RELEASE_TAG}" release-assets/* \
+              --title "${RELEASE_TAG}" \
+              --notes "Release assets for ${RELEASE_TAG}."
+          fi
