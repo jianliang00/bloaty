@@ -45,6 +45,7 @@ jobs:
         run: >
           cmake -S . -B build
           -DCMAKE_BUILD_TYPE=Release
+          -DCMAKE_POLICY_VERSION_MINIMUM=3.5
           -DBUILD_TESTING=OFF
           -DBLOATY_PREFER_SYSTEM_ABSL=NO
           -DBLOATY_PREFER_SYSTEM_CAPSTONE=NO
