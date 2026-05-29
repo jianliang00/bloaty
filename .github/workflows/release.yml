@@ -15,7 +15,72 @@ permissions:
   contents: write
 
 jobs:
-  build:
+  build-linux:
+    name: build linux-x86_64
+    runs-on: ubuntu-22.04
+
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          ref: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref }}
+          submodules: recursive
+
+      - name: Build in manylinux2014
+        shell: bash
+        run: |
+          set -euo pipefail
+          docker run --rm --platform linux/amd64 \
+            -v "${GITHUB_WORKSPACE}:/work" \
+            -w /work \
+            quay.io/pypa/manylinux2014_x86_64 \
+            /bin/bash -lc '
+              set -euo pipefail
+              git config --global --add safe.directory /work
+              git submodule foreach --recursive "git config --global --add safe.directory /work/\$sm_path" || true
+              cmake -S . -B build-linux \
+                -DCMAKE_BUILD_TYPE=Release \
+                -DCMAKE_POLICY_VERSION_MINIMUM=3.5 \
+                -DCMAKE_EXE_LINKER_FLAGS="-static-libstdc++ -static-libgcc" \
+                -DBUILD_TESTING=OFF \
+                -DBLOATY_PREFER_SYSTEM_ABSL=NO \
+                -DBLOATY_PREFER_SYSTEM_CAPSTONE=NO \
+                -DBLOATY_PREFER_SYSTEM_PROTOBUF=NO \
+                -DBLOATY_PREFER_SYSTEM_RE2=NO \
+                -DBLOATY_PREFER_SYSTEM_ZLIB=NO \
+                -DBLOATY_PREFER_SYSTEM_ZSTD=NO
+              cmake --build build-linux --config Release --target bloaty --parallel 2
+              ./build-linux/bloaty --version
+              ./build-linux/bloaty ./build-linux/bloaty -d sections > bloaty-smoke.txt
+              test -s bloaty-smoke.txt
+              strings build-linux/bloaty | grep -E "GLIBCXX_|GLIBC_" | sort -V | tail -20 || true
+              ! strings build-linux/bloaty | grep -E "GLIBCXX_3\\.4\\.(2[9-9]|[3-9][0-9])|GLIBC_2\\.(3[2-9]|[4-9][0-9])"
+            '
+
+      - name: Package
+        shell: bash
+        env:
+          RELEASE_TAG: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref_name }}
+        run: |
+          set -euo pipefail
+          package="bloaty-${RELEASE_TAG}-linux-x86_64"
+          install -d "dist/${package}/bin"
+          cp build-linux/bloaty "dist/${package}/bin/"
+          cp README.md CHANGES.md LICENSE "dist/${package}/"
+          (cd dist && tar -czf "${package}.tar.gz" "${package}")
+          (cd dist && sha256sum "${package}.tar.gz" > "${package}.tar.gz.sha256")
+
+      - name: Upload build artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: bloaty-linux-x86_64
+          path: |
+            dist/*.tar.gz
+            dist/*.tar.gz.sha256
+          if-no-files-found: error
+
+  build-macos:
     name: build ${{ matrix.asset }}
     runs-on: ${{ matrix.os }}
 
@@ -23,10 +88,6 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - os: ubuntu-22.04
-            asset: linux-x86_64
-            prefer_system_zlib: "NO"
-            cmake_args: ""
           - os: macos-15-intel
             asset: macos-x86_64
             prefer_system_zlib: "YES"
@@ -99,7 +160,9 @@ jobs:
   publish:
     name: publish release
     runs-on: ubuntu-22.04
-    needs: build
+    needs:
+      - build-linux
+      - build-macos
 
     steps:
       - name: Download build artifacts
