@@ -11,11 +11,18 @@
 
 # RUN: %yaml2obj %s -o %t.binary
 # RUN: %bloaty %t.binary -d segments --domain=vm | %FileCheck %s
+# RUN: %bloaty %t.binary -d symbols,sections --domain=both -n 0 --csv | %FileCheck %s --check-prefix=ZEROFILL
 
 # Should still work, just without compile unit info
 # CHECK: VM SIZE
 # CHECK: __LINKEDIT
 # CHECK: __TEXT
+
+# A symbol in a zero-fill section has no file bytes. The bytes occupying the
+# corresponding file offsets are segment padding, not symbol contents.
+# ZEROFILL: symbols,sections,vmsize,filesize
+# ZEROFILL-DAG: _main,"__TEXT,__thread_bss",15472,0
+# ZEROFILL-DAG: [Padding],,0,{{[1-9][0-9]*}}
 
 ## Minimal Mach-O executable
 --- !mach-o
@@ -65,19 +72,18 @@ LoadCommands:
         reserved2:       0x0
         reserved3:       0x0
         content:         00781F53C0035FD6F44FBEA9FD7B01A9FD43009160008052FAFFFF97F30300AA40008052F7FFFF970804130B13390011E00313AAF3FFFF976002000BFD7B41A9F44FC2A8C0035FD6
-      - sectname:        __unwind_info
+      - sectname:        __thread_bss
         segname:         __TEXT
         addr:            0x100000390
-        size:            96
-        offset:          0x390
+        size:            15472
+        offset:          0x0
         align:           2
         reloff:          0x0
         nreloc:          0
-        flags:           0x0
+        flags:           0x12
         reserved1:       0x0
         reserved2:       0x0
         reserved3:       0x0
-        content:         010000001C000000000000001C000000000000001C00000002000000480300004000000040000000900300000000000040000000000000000000000000000000030000000C000200140002000000000008000001000000020100000400000000
   - cmd:             LC_SEGMENT_64
     cmdsize:         72
     segname:         __LINKEDIT
@@ -224,9 +230,9 @@ LinkEditData:
       n_value:         4294968136
     - n_strx:          39
       n_type:          0xF
-      n_sect:          1
+      n_sect:          2
       n_desc:          0
-      n_value:         4294968144
+      n_value:         4294968208
     - n_strx:          45
       n_type:          0x1
       n_sect:          0
