@@ -69,6 +69,17 @@ void MaybeAddOverhead(RangeSink* sink, const char* label, string_view data) {
   }
 }
 
+static uint64_t SectionFileSize(uint32_t flags, uint64_t size) {
+  switch (flags & SECTION_TYPE) {
+    case S_ZEROFILL:
+    case S_GB_ZEROFILL:
+    case S_THREAD_LOCAL_ZEROFILL:
+      return 0;
+    default:
+      return size;
+  }
+}
+
 struct LoadCommand {
   bool is64bit;
   uint32_t cmd;
@@ -219,20 +230,16 @@ void AddSegmentAsFallback(string_view command_data, string_view file_data,
     THROW("invalid section count in segment");
   }
 
+  if (nsects == 0) {
+    sink->AddRange("macho_fallback", "[" + std::string(segname) + "]",
+                   segment->vmaddr, segment->vmsize,
+                   StrictSubstr(file_data, segment->fileoff, segment->filesize));
+    return;
+  }
+
   for (uint32_t j = 0; j < nsects; j++) {
     auto section = GetStructPointerAndAdvance<Section>(&command_data);
-
-    // filesize equals vmsize unless the section is zerofill
-    uint64_t filesize = section->size;
-    switch (section->flags & SECTION_TYPE) {
-      case S_ZEROFILL:
-      case S_GB_ZEROFILL:
-      case S_THREAD_LOCAL_ZEROFILL:
-        filesize = 0;
-        break;
-      default:
-        break;
-    }
+    uint64_t filesize = SectionFileSize(section->flags, section->size);
 
     std::string label = absl::StrJoin(
         std::make_tuple(segname, ArrayToStr(section->sectname, 16)), ",");
@@ -241,9 +248,14 @@ void AddSegmentAsFallback(string_view command_data, string_view file_data,
                    StrictSubstr(file_data, section->offset, filesize));
   }
 
+  // Section offsets are authoritative. Segment VM and file ranges are not
+  // necessarily linear when zero-fill sections are present.
   sink->AddRange("macho_fallback", "[" + std::string(segname) + "]",
                  segment->vmaddr, segment->vmsize,
-                 StrictSubstr(file_data, segment->fileoff, segment->filesize));
+                 StrictSubstr(file_data, segment->fileoff, 0));
+  sink->AddFileRange(
+      "macho_fallback", "[Padding]",
+      StrictSubstr(file_data, segment->fileoff, segment->filesize));
 }
 
 template <class Segment, class Section>
@@ -266,9 +278,29 @@ void ParseSegment(LoadCommand cmd, RangeSink* sink) {
       sink->AddFileRange(
           "macho_segment", segname,
           StrictSubstr(cmd.file_data, segment->fileoff, segment->filesize));
-    } else {
+    } else if (segment->nsects == 0) {
       sink->AddRange(
           "macho_segment", segname, segment->vmaddr, segment->vmsize,
+          StrictSubstr(cmd.file_data, segment->fileoff, segment->filesize));
+    } else {
+      uint32_t nsects = segment->nsects;
+      if (nsects > cmd.command_data.size() / sizeof(Section)) {
+        THROW("invalid section count in segment");
+      }
+
+      for (uint32_t j = 0; j < nsects; j++) {
+        auto section = GetStructPointerAndAdvance<Section>(&cmd.command_data);
+        uint64_t filesize = SectionFileSize(section->flags, section->size);
+        sink->AddRange(
+            "macho_segment", segname, section->addr, section->size,
+            StrictSubstr(cmd.file_data, section->offset, filesize));
+      }
+
+      sink->AddRange("macho_segment", segname, segment->vmaddr,
+                     segment->vmsize,
+                     StrictSubstr(cmd.file_data, segment->fileoff, 0));
+      sink->AddFileRange(
+          "macho_segment", segname,
           StrictSubstr(cmd.file_data, segment->fileoff, segment->filesize));
     }
   } else if (sink->data_source() == DataSource::kSections) {
@@ -281,18 +313,7 @@ void ParseSegment(LoadCommand cmd, RangeSink* sink) {
 
     for (uint32_t j = 0; j < nsects; j++) {
       auto section = GetStructPointerAndAdvance<Section>(&cmd.command_data);
-
-      // filesize equals vmsize unless the section is zerofill
-      uint64_t filesize = section->size;
-      switch (section->flags & SECTION_TYPE) {
-        case S_ZEROFILL:
-        case S_GB_ZEROFILL:
-        case S_THREAD_LOCAL_ZEROFILL:
-          filesize = 0;
-          break;
-        default:
-          break;
-      }
+      uint64_t filesize = SectionFileSize(section->flags, section->size);
 
       std::string label = absl::StrJoin(
           std::make_tuple(segname, ArrayToStr(section->sectname, 16)), ",");
@@ -543,18 +564,7 @@ void ReadDebugSectionsFromSegment(LoadCommand cmd, dwarf::File *dwarf,
   for (uint32_t j = 0; j < nsects; j++) {
     auto section = GetStructPointerAndAdvance<Section>(&cmd.command_data);
     string_view sectname = ArrayToStr(section->sectname, 16);
-
-    // filesize equals vmsize unless the section is zerofill
-    uint64_t filesize = section->size;
-    switch (section->flags & SECTION_TYPE) {
-      case S_ZEROFILL:
-      case S_GB_ZEROFILL:
-      case S_THREAD_LOCAL_ZEROFILL:
-        filesize = 0;
-        break;
-      default:
-        break;
-    }
+    uint64_t filesize = SectionFileSize(section->flags, section->size);
 
     string_view contents =
         StrictSubstr(cmd.file_data, section->offset, filesize);
